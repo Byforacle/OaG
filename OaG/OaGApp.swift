@@ -1,11 +1,5 @@
-//
-//  OaGApp.swift
-//  OaG
-//
-//  Created by byf on 2026/2/10.
-//
-
 import SwiftUI
+import SwiftData
 
 @main
 struct OaGApp: App {
@@ -13,5 +7,6 @@ struct OaGApp: App {
         WindowGroup {
             ContentView()
         }
+        .modelContainer(for: [Conversation.self, Message.self, AppSettings.self])
     }
 }

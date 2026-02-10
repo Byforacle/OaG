@@ -135,6 +135,8 @@ enum OaGError: Error, LocalizedError {
     case apiError(String)
     case streamingFailed(String)
     case noAPIKey
+    case requestTooLarge(Int)
+    case proxyError
 
     var errorDescription: String? {
         switch self {
@@ -148,6 +150,10 @@ enum OaGError: Error, LocalizedError {
             "流式传输失败: \(message)"
         case .noAPIKey:
             "请先在设置中配置 API Key"
+        case .requestTooLarge(let size):
+            "请求体过大 (\(size / 1024)KB)，请减少图片数量后重试"
+        case .proxyError:
+            "代理服务暂时不可用，可能是请求内容过大。请减少图片数量或稍后重试"
         }
     }
 }

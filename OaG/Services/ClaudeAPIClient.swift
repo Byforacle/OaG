@@ -33,6 +33,9 @@ final class ClaudeAPIClient: Sendable {
                         for try await line in bytes.lines {
                             body += line
                         }
+                        if httpResponse.statusCode == 502 {
+                            throw OaGError.proxyError
+                        }
                         throw OaGError.httpError(
                             statusCode: httpResponse.statusCode,
                             message: body
@@ -59,6 +62,8 @@ final class ClaudeAPIClient: Sendable {
         }
     }
 
+    private static let maxRequestBodySize = 4_000_000
+
     private static func buildRequest(
         baseURL: String,
         apiKey: String,
@@ -72,7 +77,11 @@ final class ClaudeAPIClient: Sendable {
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.httpBody = try JSONEncoder().encode(body)
+        let encoded = try JSONEncoder().encode(body)
+        if encoded.count > maxRequestBodySize {
+            throw OaGError.requestTooLarge(encoded.count)
+        }
+        request.httpBody = encoded
         return request
     }
 }

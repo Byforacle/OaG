@@ -130,18 +130,30 @@ final class ChatViewModel {
 
     private func buildAPIMessages() -> [APIMessage] {
         // Exclude the last message (empty assistant placeholder)
-        messages.dropLast().map { msg in
-            APIMessage(
-                role: msg.role,
-                content: msg.contentBlocks.map { block in
-                    switch block {
-                    case .text(let t):
-                        .text(t)
-                    case .image(let mt, let d):
-                        .image(mediaType: mt, data: d)
+        let relevantMessages = Array(messages.dropLast())
+        guard !relevantMessages.isEmpty else { return [] }
+
+        // Only the latest user message keeps full image data.
+        // Older images are replaced with [image] to avoid oversized requests.
+        let lastIndex = relevantMessages.count - 1
+
+        return relevantMessages.enumerated().map { index, msg in
+            let isLatestUserMessage = (index == lastIndex && msg.role == "user")
+
+            let apiBlocks: [APIContentBlock] = msg.contentBlocks.map { block in
+                switch block {
+                case .text(let t):
+                    return .text(t)
+                case .image(let mt, let d):
+                    if isLatestUserMessage {
+                        return .image(mediaType: mt, data: d)
+                    } else {
+                        return .text("[image]")
                     }
                 }
-            )
+            }
+
+            return APIMessage(role: msg.role, content: apiBlocks)
         }
     }
 

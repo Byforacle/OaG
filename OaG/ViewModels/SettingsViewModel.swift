@@ -22,9 +22,15 @@ final class SettingsViewModel {
         if let existing = try? modelContext.fetch(descriptor).first {
             self.settings = existing
             self.baseURL = existing.baseURL
-            self.defaultModel = ClaudeModel(rawValue: existing.defaultModelIdentifier) ?? .opus
+            self.defaultModel = ClaudeModel.fromLegacyIdentifier(existing.defaultModelIdentifier) ?? .opus
             self.maxTokens = existing.maxTokens
             self.defaultSystemPrompt = existing.defaultSystemPrompt
+
+            // Migrate stale default model identifier
+            if existing.defaultModelIdentifier != defaultModel.rawValue {
+                existing.defaultModelIdentifier = defaultModel.rawValue
+                try? modelContext.save()
+            }
         } else {
             let newSettings = AppSettings()
             modelContext.insert(newSettings)

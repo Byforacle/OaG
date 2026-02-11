@@ -36,7 +36,7 @@ final class ConversationListViewModel {
     @discardableResult
     func createConversation() -> Conversation {
         let settings = loadSettings()
-        let model = ClaudeModel(rawValue: settings?.defaultModelIdentifier ?? "") ?? .opus
+        let model = ClaudeModel.fromLegacyIdentifier(settings?.defaultModelIdentifier ?? "") ?? .opus
         let conversation = Conversation(
             systemPrompt: settings?.defaultSystemPrompt ?? "",
             modelIdentifier: model.rawValue

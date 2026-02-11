@@ -34,6 +34,6 @@ final class Conversation {
     }
 
     var currentModel: ClaudeModel? {
-        ClaudeModel(rawValue: modelIdentifier)
+        ClaudeModel.fromLegacyIdentifier(modelIdentifier)
     }
 }

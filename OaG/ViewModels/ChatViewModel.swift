@@ -23,6 +23,14 @@ final class ChatViewModel {
     func loadConversation(_ conversation: Conversation) {
         self.conversation = conversation
         self.messages = conversation.sortedMessages
+
+        // Migrate legacy model identifier to current value
+        if let resolved = ClaudeModel.fromLegacyIdentifier(conversation.modelIdentifier),
+           conversation.modelIdentifier != resolved.rawValue {
+            conversation.modelIdentifier = resolved.rawValue
+            try? modelContext.save()
+        }
+
         configureClient()
     }
 

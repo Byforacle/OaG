@@ -52,6 +52,8 @@ final class ChatViewModel {
             return
         }
 
+        HapticManager.impact(.medium)
+
         // Build user content blocks
         var contentBlocks: [ContentBlock] = []
         for image in attachedImages {
@@ -90,6 +92,34 @@ final class ChatViewModel {
         streamTask?.cancel()
         streamTask = nil
         isStreaming = false
+        HapticManager.impact(.light)
+    }
+
+    func regenerate() {
+        guard messages.count >= 2,
+              let lastAssistant = messages.last,
+              lastAssistant.role == "assistant",
+              !isStreaming
+        else { return }
+
+        guard apiClient != nil else {
+            errorMessage = OaGError.noAPIKey.localizedDescription
+            showError = true
+            return
+        }
+
+        HapticManager.impact(.medium)
+
+        modelContext.delete(lastAssistant)
+        messages.removeLast()
+
+        let newAssistant = Message(role: "assistant", content: [.text("")], conversation: conversation)
+        modelContext.insert(newAssistant)
+        messages.append(newAssistant)
+
+        isStreaming = true
+        streamingText = ""
+        streamTask = Task { await performStream(assistantMessage: newAssistant) }
     }
 
     private func performStream(assistantMessage: Message) async {

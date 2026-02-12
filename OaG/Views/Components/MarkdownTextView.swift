@@ -1,77 +1,69 @@
 import SwiftUI
+import MarkdownUI
 
 struct MarkdownTextView: View {
     let text: String
 
     var body: some View {
-        let segments = parseSegments(text)
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
-                switch segment {
-                case .text(let content):
-                    if let attributed = try? AttributedString(
-                        markdown: content,
-                        options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-                    ) {
-                        Text(attributed)
-                            .foregroundStyle(Color.assistantText)
-                            .textSelection(.enabled)
-                    } else {
-                        Text(content)
-                            .foregroundStyle(Color.assistantText)
-                            .textSelection(.enabled)
+        Markdown(text)
+            .markdownTheme(chatTheme)
+            .textSelection(.enabled)
+    }
+
+    private var chatTheme: Theme {
+        Theme()
+            .text {
+                ForegroundColor(Color.assistantText)
+            }
+            .code {
+                FontFamilyVariant(.monospaced)
+                FontSize(.em(0.85))
+                BackgroundColor(Color.codeBackground)
+            }
+            .heading1 { configuration in
+                configuration.label
+                    .markdownTextStyle {
+                        FontWeight(.bold)
+                        FontSize(.em(1.5))
+                        ForegroundColor(Color.assistantText)
                     }
-                case .code(let language, let code):
-                    CodeBlockView(language: language, code: code)
+                    .padding(.bottom, 4)
+            }
+            .heading2 { configuration in
+                configuration.label
+                    .markdownTextStyle {
+                        FontWeight(.bold)
+                        FontSize(.em(1.3))
+                        ForegroundColor(Color.assistantText)
+                    }
+                    .padding(.bottom, 2)
+            }
+            .heading3 { configuration in
+                configuration.label
+                    .markdownTextStyle {
+                        FontWeight(.semibold)
+                        FontSize(.em(1.1))
+                        ForegroundColor(Color.assistantText)
+                    }
+            }
+            .blockquote { configuration in
+                HStack(spacing: 0) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.secondary.opacity(0.5))
+                        .frame(width: 3)
+                    configuration.label
+                        .markdownTextStyle {
+                            ForegroundColor(.secondary)
+                        }
+                        .padding(.leading, 8)
                 }
+                .padding(.vertical, 2)
             }
-        }
-    }
-
-    private enum Segment {
-        case text(String)
-        case code(language: String, code: String)
-    }
-
-    private func parseSegments(_ text: String) -> [Segment] {
-        var segments: [Segment] = []
-        let pattern = "```(\\w*)\\n([\\s\\S]*?)```"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return [.text(text)]
-        }
-
-        let nsText = text as NSString
-        var lastEnd = 0
-        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
-
-        for match in matches {
-            let matchRange = match.range
-            if matchRange.location > lastEnd {
-                let before = nsText.substring(with: NSRange(location: lastEnd, length: matchRange.location - lastEnd))
-                let trimmed = before.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    segments.append(.text(trimmed))
-                }
+            .codeBlock { configuration in
+                CodeBlockView(
+                    language: configuration.language ?? "",
+                    code: configuration.content
+                )
             }
-            let language = nsText.substring(with: match.range(at: 1))
-            let code = nsText.substring(with: match.range(at: 2))
-                .trimmingCharacters(in: .newlines)
-            segments.append(.code(language: language, code: code))
-            lastEnd = matchRange.location + matchRange.length
-        }
-
-        if lastEnd < nsText.length {
-            let remaining = nsText.substring(from: lastEnd)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !remaining.isEmpty {
-                segments.append(.text(remaining))
-            }
-        }
-
-        if segments.isEmpty {
-            segments.append(.text(text))
-        }
-
-        return segments
     }
 }

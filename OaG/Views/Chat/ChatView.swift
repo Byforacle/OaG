@@ -40,7 +40,9 @@ struct ChatView: View {
                     ForEach(viewModel?.messages ?? [], id: \.id) { message in
                         MessageBubbleView(
                             message: message,
-                            isStreaming: isStreamingMessage(message)
+                            isStreaming: isStreamingMessage(message),
+                            isLastAssistantMessage: isLastAssistant(message),
+                            onRegenerate: { viewModel?.regenerate() }
                         )
                         .id(message.id)
                     }
@@ -88,6 +90,11 @@ struct ChatView: View {
     private func isStreamingMessage(_ message: Message) -> Bool {
         guard viewModel?.isStreaming == true else { return false }
         return message.id == viewModel?.messages.last?.id
+    }
+
+    private func isLastAssistant(_ message: Message) -> Bool {
+        guard let vm = viewModel else { return false }
+        return message.id == vm.messages.last?.id && message.role == "assistant"
     }
 
     private func scrollToBottom(proxy: ScrollViewProxy) {

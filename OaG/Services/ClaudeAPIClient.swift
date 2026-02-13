@@ -62,7 +62,7 @@ final class ClaudeAPIClient: Sendable {
         }
     }
 
-    private static let maxRequestBodySize = 4_000_000
+    private static let maxRequestBodySize = 10_000_000
 
     private static func buildRequest(
         baseURL: String,

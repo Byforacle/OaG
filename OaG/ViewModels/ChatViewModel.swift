@@ -1,6 +1,13 @@
 import SwiftUI
 import SwiftData
 
+enum AgentStatus: Equatable {
+    case idle
+    case thinking
+    case callingTool(name: String)
+    case processing
+}
+
 @Observable
 final class ChatViewModel {
     var messages: [Message] = []
@@ -10,11 +17,16 @@ final class ChatViewModel {
     var streamingText: String = ""
     var errorMessage: String?
     var showError: Bool = false
+    var agentStatus: AgentStatus = .idle
 
     private var conversation: Conversation?
     private var modelContext: ModelContext
     private var apiClient: ClaudeAPIClient?
     private var streamTask: Task<Void, Never>?
+
+    let toolRegistry = ToolRegistry()
+    private let maxAgentIterations = 25
+    private let maxRetries = 3
 
     init(modelContext: ModelContext) {
         self.modelContext = modelContext
@@ -24,7 +36,6 @@ final class ChatViewModel {
         self.conversation = conversation
         self.messages = conversation.sortedMessages
 
-        // Migrate legacy model identifier to current value
         if let resolved = ClaudeModel.fromLegacyIdentifier(conversation.modelIdentifier),
            conversation.modelIdentifier != resolved.rawValue {
             conversation.modelIdentifier = resolved.rawValue
@@ -32,6 +43,11 @@ final class ChatViewModel {
         }
 
         configureClient()
+        registerBuiltinTools()
+    }
+
+    private func registerBuiltinTools() {
+        toolRegistry.register(CalculatorTool())
     }
 
     func configureClient() {
@@ -42,6 +58,8 @@ final class ChatViewModel {
         guard !apiKey.isEmpty else { return }
         self.apiClient = ClaudeAPIClient(baseURL: baseURL, apiKey: apiKey)
     }
+
+    // MARK: - Public Actions
 
     func send() {
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -54,7 +72,6 @@ final class ChatViewModel {
 
         HapticManager.impact(.medium)
 
-        // Build user content blocks
         var contentBlocks: [ContentBlock] = []
         for image in attachedImages {
             if let compressed = ImageCompressor.compressForAPI(image) {
@@ -68,30 +85,28 @@ final class ChatViewModel {
             contentBlocks.append(.text(trimmed))
         }
 
-        // Create and persist user message
         let userMessage = Message(role: "user", content: contentBlocks, conversation: conversation)
         modelContext.insert(userMessage)
         messages.append(userMessage)
 
-        // Clear input
         inputText = ""
         attachedImages = []
 
-        // Create placeholder assistant message
         let assistantMessage = Message(role: "assistant", content: [.text("")], conversation: conversation)
         modelContext.insert(assistantMessage)
         messages.append(assistantMessage)
 
-        // Start streaming
         isStreaming = true
         streamingText = ""
-        streamTask = Task { await performStream(assistantMessage: assistantMessage) }
+        agentStatus = .thinking
+        streamTask = Task { await performAgentLoop(assistantMessage: assistantMessage) }
     }
 
     func stopStreaming() {
         streamTask?.cancel()
         streamTask = nil
         isStreaming = false
+        agentStatus = .idle
         HapticManager.impact(.light)
     }
 
@@ -119,66 +134,196 @@ final class ChatViewModel {
 
         isStreaming = true
         streamingText = ""
-        streamTask = Task { await performStream(assistantMessage: newAssistant) }
+        agentStatus = .thinking
+        streamTask = Task { await performAgentLoop(assistantMessage: newAssistant) }
     }
 
-    private func performStream(assistantMessage: Message) async {
+    // MARK: - Agent Loop
+
+    private func performAgentLoop(assistantMessage: Message) async {
         guard let client = apiClient, let conversation else { return }
 
+        var currentAssistant = assistantMessage
+        var iteration = 0
+
+        while iteration < maxAgentIterations {
+            iteration += 1
+            agentStatus = .thinking
+
+            let (stopReason, contentBlocks) = await performSingleStream(
+                client: client,
+                conversation: conversation,
+                assistantMessage: currentAssistant
+            )
+
+            guard !Task.isCancelled else { break }
+
+            if stopReason == "tool_use" && !toolRegistry.isEmpty {
+                // Extract tool_use blocks
+                let toolUseBlocks = contentBlocks.compactMap { block -> (id: String, name: String, input: String)? in
+                    if case .toolUse(let id, let name, let input) = block {
+                        return (id, name, input)
+                    }
+                    return nil
+                }
+
+                guard !toolUseBlocks.isEmpty else { break }
+
+                // Execute each tool and collect results
+                var resultBlocks: [ContentBlock] = []
+                for toolUse in toolUseBlocks {
+                    agentStatus = .callingTool(name: toolUse.name)
+                    let result = await toolRegistry.execute(name: toolUse.name, input: toolUse.input)
+                    resultBlocks.append(.toolResult(
+                        toolUseId: toolUse.id,
+                        content: result.content,
+                        isError: result.isError
+                    ))
+                }
+
+                // Create tool_result message (role: "user" per API contract)
+                let resultMessage = Message(role: "user", content: resultBlocks, conversation: conversation)
+                modelContext.insert(resultMessage)
+                messages.append(resultMessage)
+
+                // Create new assistant placeholder for next turn
+                let nextAssistant = Message(role: "assistant", content: [.text("")], conversation: conversation)
+                modelContext.insert(nextAssistant)
+                messages.append(nextAssistant)
+
+                streamingText = ""
+                currentAssistant = nextAssistant
+                // Continue loop
+            } else {
+                // end_turn, max_tokens, or no tools — done
+                break
+            }
+        }
+
+        if iteration >= maxAgentIterations {
+            errorMessage = OaGError.maxIterationsReached.localizedDescription
+            showError = true
+        }
+
+        conversation.updatedAt = .now
+        if conversation.title == "新对话" && messages.count <= 3 {
+            conversation.title = generateTitle(from: currentAssistant.textContent)
+        }
+        try? modelContext.save()
+        isStreaming = false
+        agentStatus = .idle
+    }
+
+    // MARK: - Single Stream Turn
+
+    /// Performs a single API stream request and returns (stopReason, contentBlocks).
+    private func performSingleStream(
+        client: ClaudeAPIClient,
+        conversation: Conversation,
+        assistantMessage: Message
+    ) async -> (String?, [ContentBlock]) {
         let apiMessages = buildAPIMessages()
         let maxTokens = loadMaxTokens()
+        let tools = toolRegistry.isEmpty ? nil : toolRegistry.allDefinitions()
+
         let request = MessagesRequest(
             model: conversation.modelIdentifier,
             maxTokens: maxTokens,
             messages: apiMessages,
             stream: true,
-            system: conversation.systemPrompt.isEmpty ? nil : conversation.systemPrompt
+            system: conversation.systemPrompt.isEmpty ? nil : conversation.systemPrompt,
+            tools: tools,
+            toolChoice: nil
         )
+
+        var accumulator = ToolUseAccumulator()
+        var contentBlocks: [ContentBlock] = []
+        var stopReason: String?
+        var currentText = ""
 
         do {
             for try await event in client.streamMessage(request) {
                 if Task.isCancelled { break }
                 switch event {
-                case .contentBlockDelta(_, let text):
-                    streamingText += text
-                    assistantMessage.contentBlocks = [.text(streamingText)]
                 case .messageStart(_, _, let inputTokens):
                     assistantMessage.inputTokens = inputTokens
-                case .messageDelta(_, let outputTokens):
+
+                case .contentBlockStart(let index, let type, let id, let name):
+                    if type == "tool_use", let id, let name {
+                        accumulator.startBlock(index: index, id: id, name: name)
+                        agentStatus = .callingTool(name: name)
+                    }
+
+                case .contentBlockDelta(_, let text):
+                    currentText += text
+                    streamingText = currentText
+                    // Update assistant message with current text for live display
+                    var blocks = contentBlocks
+                    blocks.append(.text(currentText))
+                    assistantMessage.contentBlocks = blocks
+
+                case .inputJsonDelta(let index, let partialJson):
+                    accumulator.appendJson(index: index, fragment: partialJson)
+
+                case .contentBlockStop(let index):
+                    if let toolUse = accumulator.finishBlock(index: index) {
+                        contentBlocks.append(.toolUse(
+                            id: toolUse.id,
+                            name: toolUse.name,
+                            input: toolUse.inputJson
+                        ))
+                        // Update display
+                        assistantMessage.contentBlocks = contentBlocks + (currentText.isEmpty ? [] : [.text(currentText)])
+                    } else if !currentText.isEmpty {
+                        // Text block finished
+                        contentBlocks.append(.text(currentText))
+                        currentText = ""
+                    }
+
+                case .messageDelta(let reason, let outputTokens):
+                    stopReason = reason
                     assistantMessage.outputTokens = outputTokens
+
                 case .error(let apiError):
                     throw OaGError.apiError(apiError.message)
-                default:
+
+                case .messageStop, .ping:
                     break
                 }
             }
-            conversation.updatedAt = .now
-            if conversation.title == "新对话" && messages.count <= 3 {
-                conversation.title = generateTitle(from: streamingText)
+
+            // Finalize: if there's remaining text, add it
+            if !currentText.isEmpty && !contentBlocks.contains(where: {
+                if case .text(let t) = $0 { return t == currentText }
+                return false
+            }) {
+                contentBlocks.append(.text(currentText))
             }
-            try? modelContext.save()
+
+            assistantMessage.contentBlocks = contentBlocks
         } catch {
             if !Task.isCancelled {
                 errorMessage = error.localizedDescription
                 showError = true
             }
         }
-        isStreaming = false
+
+        return (stopReason, contentBlocks)
     }
+
+    // MARK: - Helpers
 
     private func buildAPIMessages() -> [APIMessage] {
         // Exclude the last message (empty assistant placeholder)
         let relevantMessages = Array(messages.dropLast())
         guard !relevantMessages.isEmpty else { return [] }
 
-        // Only the latest user message keeps full image data.
-        // Older images are replaced with [image] to avoid oversized requests.
         let lastIndex = relevantMessages.count - 1
 
-        return relevantMessages.enumerated().map { index, msg in
+        var apiMessages = relevantMessages.enumerated().map { index, msg -> APIMessage in
             let isLatestUserMessage = (index == lastIndex && msg.role == "user")
 
-            let apiBlocks: [APIContentBlock] = msg.contentBlocks.map { block in
+            let apiBlocks: [APIContentBlock] = msg.contentBlocks.compactMap { block in
                 switch block {
                 case .text(let t):
                     return .text(t)
@@ -188,11 +333,32 @@ final class ChatViewModel {
                     } else {
                         return .text("[image]")
                     }
+                case .toolUse(let id, let name, let input):
+                    return .toolUse(id: id, name: name, input: input)
+                case .toolResult(let toolUseId, let content, let isError):
+                    return .toolResult(
+                        toolUseId: toolUseId,
+                        content: [.text(content)],
+                        isError: isError
+                    )
                 }
             }
 
             return APIMessage(role: msg.role, content: apiBlocks)
         }
+
+        // Context window management: estimate tokens and truncate if needed
+        let budget = TokenEstimator.contextWindow(for: conversation?.modelIdentifier ?? "")
+        let maxInputBudget = Int(Double(budget) * 0.8) // Reserve 20% for output
+        var totalTokens = TokenEstimator.estimateMessages(apiMessages)
+
+        while totalTokens > maxInputBudget && apiMessages.count > 2 {
+            // Remove the second message (keep first for context continuity)
+            apiMessages.remove(at: 1)
+            totalTokens = TokenEstimator.estimateMessages(apiMessages)
+        }
+
+        return apiMessages
     }
 
     private func loadMaxTokens() -> Int {

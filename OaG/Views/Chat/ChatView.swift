@@ -42,6 +42,7 @@ struct ChatView: View {
                             message: message,
                             isStreaming: isStreamingMessage(message),
                             isLastAssistantMessage: isLastAssistant(message),
+                            agentStatus: isStreamingMessage(message) ? (viewModel?.agentStatus ?? .idle) : .idle,
                             onRegenerate: { viewModel?.regenerate() }
                         )
                         .id(message.id)
@@ -53,6 +54,9 @@ struct ChatView: View {
                 scrollToBottom(proxy: proxy)
             }
             .onChange(of: viewModel?.messages.count) {
+                scrollToBottom(proxy: proxy)
+            }
+            .onChange(of: viewModel?.agentStatus) {
                 scrollToBottom(proxy: proxy)
             }
         }

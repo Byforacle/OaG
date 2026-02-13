@@ -24,6 +24,10 @@ struct MessageContentView: View {
                             .frame(maxWidth: 200, maxHeight: 200)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
+                case .toolUse(_, let name, let input):
+                    ToolUseBlockView(name: name, input: input)
+                case .toolResult(_, let content, let isError):
+                    ToolResultBlockView(content: content, isError: isError)
                 }
             }
         }

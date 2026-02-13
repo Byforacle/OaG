@@ -8,11 +8,14 @@ struct MessagesRequest: Encodable, Sendable {
     let messages: [APIMessage]
     let stream: Bool
     let system: String?
+    let tools: [ToolDefinition]?
+    let toolChoice: ToolChoice?
 
     enum CodingKeys: String, CodingKey {
         case model
         case maxTokens = "max_tokens"
-        case messages, stream, system
+        case messages, stream, system, tools
+        case toolChoice = "tool_choice"
     }
 
     func encode(to encoder: Encoder) throws {
@@ -24,6 +27,12 @@ struct MessagesRequest: Encodable, Sendable {
         if let system, !system.isEmpty {
             try container.encode(system, forKey: .system)
         }
+        if let tools, !tools.isEmpty {
+            try container.encode(tools, forKey: .tools)
+        }
+        if let toolChoice {
+            try container.encode(toolChoice, forKey: .toolChoice)
+        }
     }
 }
 
@@ -32,7 +41,9 @@ struct APIMessage: Encodable, Sendable {
     let content: [APIContentBlock]
 }
 
-enum APIContentBlock: Encodable, Sendable {
+// MARK: - API Content Blocks
+
+enum ToolResultContent: Encodable, Sendable {
     case text(String)
     case image(mediaType: String, data: String)
 
@@ -62,11 +73,70 @@ enum APIContentBlock: Encodable, Sendable {
     }
 }
 
+enum APIContentBlock: Encodable, Sendable {
+    case text(String)
+    case image(mediaType: String, data: String)
+    case toolUse(id: String, name: String, input: String)
+    case toolResult(toolUseId: String, content: [ToolResultContent], isError: Bool)
+
+    private enum CodingKeys: String, CodingKey {
+        case type, text, source
+        case id, name, input
+        case toolUseId = "tool_use_id"
+        case content
+        case isError = "is_error"
+    }
+
+    private enum SourceKeys: String, CodingKey {
+        case type
+        case mediaType = "media_type"
+        case data
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .text(let text):
+            try container.encode("text", forKey: .type)
+            try container.encode(text, forKey: .text)
+        case .image(let mediaType, let data):
+            try container.encode("image", forKey: .type)
+            var source = container.nestedContainer(keyedBy: SourceKeys.self, forKey: .source)
+            try source.encode("base64", forKey: .type)
+            try source.encode(mediaType, forKey: .mediaType)
+            try source.encode(data, forKey: .data)
+        case .toolUse(let id, let name, let input):
+            try container.encode("tool_use", forKey: .type)
+            try container.encode(id, forKey: .id)
+            try container.encode(name, forKey: .name)
+            // input is raw JSON string, encode as raw JSON
+            if let jsonData = input.data(using: .utf8),
+               let jsonObj = try? JSONSerialization.jsonObject(with: jsonData) {
+                let rawData = try JSONSerialization.data(withJSONObject: jsonObj)
+                let rawJSON = try JSONDecoder().decode(JSONValue.self, from: rawData)
+                try container.encode(rawJSON, forKey: .input)
+            } else {
+                try container.encode(JSONValue.object([:]), forKey: .input)
+            }
+        case .toolResult(let toolUseId, let content, let isError):
+            try container.encode("tool_result", forKey: .type)
+            try container.encode(toolUseId, forKey: .toolUseId)
+            try container.encode(content, forKey: .content)
+            if isError {
+                try container.encode(true, forKey: .isError)
+            }
+        }
+    }
+}
+
 // MARK: - SSE Event Types
 
 enum SSEEvent: Sendable {
     case messageStart(messageId: String, model: String, inputTokens: Int)
+    case contentBlockStart(index: Int, type: String, id: String?, name: String?)
     case contentBlockDelta(index: Int, text: String)
+    case inputJsonDelta(index: Int, partialJson: String)
+    case contentBlockStop(index: Int)
     case messageDelta(stopReason: String?, outputTokens: Int)
     case messageStop
     case error(APIError)
@@ -98,6 +168,32 @@ struct SSEContentBlockDelta: Decodable {
 struct SSEDelta: Decodable {
     let type: String?
     let text: String?
+    let partialJson: String?
+
+    enum CodingKeys: String, CodingKey {
+        case type, text
+        case partialJson = "partial_json"
+    }
+}
+
+struct SSEContentBlockStart: Decodable {
+    let index: Int
+    let contentBlock: SSEContentBlockInfo
+
+    enum CodingKeys: String, CodingKey {
+        case index
+        case contentBlock = "content_block"
+    }
+}
+
+struct SSEContentBlockInfo: Decodable {
+    let type: String
+    let id: String?
+    let name: String?
+}
+
+struct SSEContentBlockStopEvent: Decodable {
+    let index: Int
 }
 
 struct SSEMessageDelta: Decodable {
@@ -137,6 +233,7 @@ enum OaGError: Error, LocalizedError {
     case noAPIKey
     case requestTooLarge(Int)
     case proxyError
+    case maxIterationsReached
 
     var errorDescription: String? {
         switch self {
@@ -154,6 +251,8 @@ enum OaGError: Error, LocalizedError {
             "请求体过大 (\(size / 1024)KB)，请减少图片数量后重试"
         case .proxyError:
             "代理服务暂时不可用，可能是请求内容过大。请减少图片数量或稍后重试"
+        case .maxIterationsReached:
+            "Agent 已达到最大迭代次数限制"
         }
     }
 }

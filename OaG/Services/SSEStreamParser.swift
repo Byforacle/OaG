@@ -32,9 +32,26 @@ struct SSEStreamParser: Sendable {
                 inputTokens: parsed.message.usage?.inputTokens ?? 0
             )
 
+        case "content_block_start":
+            guard let parsed = try? decoder.decode(SSEContentBlockStart.self, from: data) else { return nil }
+            return .contentBlockStart(
+                index: parsed.index,
+                type: parsed.contentBlock.type,
+                id: parsed.contentBlock.id,
+                name: parsed.contentBlock.name
+            )
+
         case "content_block_delta":
             guard let parsed = try? decoder.decode(SSEContentBlockDelta.self, from: data) else { return nil }
+            let deltaType = parsed.delta.type ?? "text_delta"
+            if deltaType == "input_json_delta", let partialJson = parsed.delta.partialJson {
+                return .inputJsonDelta(index: parsed.index, partialJson: partialJson)
+            }
             return .contentBlockDelta(index: parsed.index, text: parsed.delta.text ?? "")
+
+        case "content_block_stop":
+            guard let parsed = try? decoder.decode(SSEContentBlockStopEvent.self, from: data) else { return nil }
+            return .contentBlockStop(index: parsed.index)
 
         case "message_delta":
             guard let parsed = try? decoder.decode(SSEMessageDelta.self, from: data) else { return nil }

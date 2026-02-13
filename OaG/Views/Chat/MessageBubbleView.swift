@@ -4,11 +4,29 @@ struct MessageBubbleView: View {
     let message: Message
     let isStreaming: Bool
     let isLastAssistantMessage: Bool
+    var agentStatus: AgentStatus = .idle
     var onRegenerate: (() -> Void)?
 
     private var isUser: Bool { message.role == "user" }
+    private var isToolResultMessage: Bool {
+        message.role == "user" && message.contentBlocks.contains(where: {
+            if case .toolResult = $0 { return true }
+            return false
+        })
+    }
 
     var body: some View {
+        if isToolResultMessage {
+            VStack(alignment: .leading, spacing: 4) {
+                MessageContentView(blocks: message.contentBlocks, isUser: false)
+            }
+            .padding(.horizontal, 8)
+        } else {
+            standardBubble
+        }
+    }
+
+    private var standardBubble: some View {
         HStack(alignment: .top, spacing: 8) {
             if isUser { Spacer(minLength: 40) }
 
@@ -31,8 +49,13 @@ struct MessageBubbleView: View {
                 }
 
                 if isStreaming {
-                    LoadingDotsView()
-                        .padding(.leading, 8)
+                    if agentStatus != .idle {
+                        AgentStatusView(status: agentStatus)
+                            .padding(.leading, 8)
+                    } else {
+                        LoadingDotsView()
+                            .padding(.leading, 8)
+                    }
                 }
 
                 if !isUser && isLastAssistantMessage && !isStreaming && !message.textContent.isEmpty {
